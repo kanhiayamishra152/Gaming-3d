@@ -1,164 +1,159 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>3D Model Debugger</title>
+    <title>City Game Final</title>
     <style>
-        body { margin: 0; overflow: hidden; background: #333; font-family: monospace; }
+        body { margin: 0; overflow: hidden; background: #87CEEB; font-family: sans-serif; }
         
-        /* Message Box for Status */
-        #status-box {
-            position: absolute; top: 10px; left: 10px; width: 90%;
-            background: rgba(0, 0, 0, 0.8); color: lime;
-            padding: 10px; border-radius: 8px; pointer-events: none;
-            white-space: pre-wrap; font-size: 14px; z-index: 100;
+        /* Debug UI */
+        #debug-panel {
+            position: absolute; top: 10px; left: 10px;
+            background: rgba(0, 0, 0, 0.7); color: #00ff00;
+            padding: 10px; border-radius: 8px; font-size: 12px;
+            pointer-events: none; max-width: 300px;
         }
-        .error { color: #ff5555; font-weight: bold; }
-        .success { color: #55ff55; }
-        .info { color: #aaaaff; }
 
         /* Controls */
-        #joystick-zone { position: absolute; bottom: 30px; left: 30px; width: 120px; height: 120px; z-index: 50; }
-        #look-zone { position: absolute; top: 0; right: 0; width: 50%; height: 100%; z-index: 50; }
+        #joystick-zone { position: absolute; bottom: 40px; left: 40px; width: 120px; height: 120px; z-index: 10; }
+        #look-zone { position: absolute; top: 0; right: 0; width: 50%; height: 100%; z-index: 10; }
+        
+        /* Loading */
+        #loader {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: #111; color: white; display: flex; flex-direction: column;
+            justify-content: center; align-items: center; z-index: 100;
+        }
     </style>
 
-    <!-- Libraries -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/nipplejs/0.9.0/nipplejs.min.js"></script>
 </head>
 <body>
 
-    <div id="status-box">Initializing System...</div>
+    <div id="loader"><h1>Loading World...</h1><p id="load-status">Downloading assets...</p></div>
+    <div id="debug-panel">Waiting for models...</div>
+    
     <div id="joystick-zone"></div>
     <div id="look-zone"></div>
 
     <script>
-        // --- 1. CONFIGURATION (NAAM YAHAN CHECK KAREIN) ---
-        const FILES = {
-            city: 'futuristic_city.glb',    // File name check karein (case sensitive!)
-            player: 'soldier_human.glb'     // File name check karein
+        // --- CONFIGURATION ---
+        const CONFIG = {
+            cityFile: 'futuristic_city.glb',   
+            playerFile: 'soldier_human.glb',
+            cityScale: 50,      // City ko jabardasti 50x bada kar diya
+            playerScale: 1.5    // Player ka size
         };
 
-        // --- 2. LOGGING SYSTEM ---
-        const statusBox = document.getElementById('status-box');
-        function log(msg, type = 'info') {
-            console.log(msg);
-            const line = document.createElement('div');
-            line.textContent = `> ${msg}`;
-            line.className = type;
-            statusBox.appendChild(line);
-        }
+        const debugPanel = document.getElementById('debug-panel');
+        function log(msg) { debugPanel.innerHTML += "<br>> " + msg; console.log(msg); }
 
-        // --- 3. BASIC SCENE ---
+        // --- SCENE SETUP ---
         const scene = new THREE.Scene();
-        scene.background = new THREE.Color(0x808080); // Grey background taaki model dikhe
+        scene.background = new THREE.Color(0x87CEEB);
+        scene.fog = new THREE.Fog(0x87CEEB, 20, 150); // Door ki cheezen dhundhli
 
-        // Helpers (Grid aur Axis taaki pata chale zameen kahan hai)
-        const grid = new THREE.GridHelper(100, 100);
-        scene.add(grid);
-        const axes = new THREE.AxesHelper(5); // Red=X, Green=Y, Blue=Z
-        scene.add(axes);
-
-        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 10000);
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 2000);
         const renderer = new THREE.WebGLRenderer({ antialias: true });
         renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
         document.body.appendChild(renderer.domElement);
 
-        // Lighting (Boht tez light taaki sab dikhe)
-        const ambLight = new THREE.AmbientLight(0xffffff, 1);
-        scene.add(ambLight);
-        const dirLight = new THREE.DirectionalLight(0xffffff, 2);
-        dirLight.position.set(10, 20, 10);
+        // LIGHTS
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambientLight);
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
+        dirLight.position.set(50, 100, 50);
+        dirLight.castShadow = true;
         scene.add(dirLight);
 
-        // --- 4. ASSET LOADER WITH AUTO-SCALE ---
+        // --- VARIABLES ---
+        let player, city;
+        let mixer; // Animation Manager
+        let actions = []; // List of animations
+        let activeAction;
+        let lastAction;
+
+        const clock = new THREE.Clock();
+        let joystickData = { angle: 0, force: 0 };
+        let camRot = { x: -0.3, y: Math.PI };
+        let camDist = 5;
+
+        // --- ASSET LOADER ---
         const loader = new THREE.GLTFLoader();
-        let playerMesh = null;
-        let mixer = null;
-        
-        // Function: Load and Auto-Fix Model
-        function loadModel(name, url, isPlayer) {
-            log(`Starting download: ${url}...`, 'info');
-            
-            loader.load(url, (gltf) => {
-                const model = gltf.scene;
-                
-                // --- AUTO SCALING MAGIC ---
-                // Model ka asli size nikalna
-                const box = new THREE.Box3().setFromObject(model);
-                const size = new THREE.Vector3();
-                box.getSize(size);
-                
-                log(`✅ ${name} Loaded! Original Size: ${size.x.toFixed(2)}, ${size.y.toFixed(2)}`, 'success');
+        let assetsLoaded = 0;
 
-                if (size.length() === 0) {
-                    log(`⚠️ Warning: ${name} is empty (0 size)!`, 'error');
-                    return;
-                }
-
-                // Model ko Center karna
-                const center = new THREE.Vector3();
-                box.getCenter(center);
-                model.position.sub(center); // Center to (0,0,0)
-
-                // Scale Logic (Agar model bohot bada ya chota hai to fix karo)
-                const targetSize = isPlayer ? 2 : 50; // Player 2m uncha, City 50m
-                const maxDim = Math.max(size.x, size.y, size.z);
-                const scaleFactor = targetSize / maxDim;
-                
-                model.scale.setScalar(scaleFactor);
-                
-                // Position fix
-                if(isPlayer) {
-                    model.position.y = 0; // Zameen par
-                    playerMesh = model;
-                    
-                    // Add simple animation if available
-                    if(gltf.animations.length > 0) {
-                        mixer = new THREE.AnimationMixer(playerMesh);
-                        mixer.clipAction(gltf.animations[0]).play();
-                    }
-                } else {
-                    model.position.y = -1; // City thoda neeche
-                }
-
-                scene.add(model);
-                log(`${name} Rescaled & Added to Scene.`, 'success');
-
-            }, 
-            undefined, // Progress
-            (error) => {
-                log(`❌ ERROR: Could not load ${name} (${url})`, 'error');
-                log(`Tip: Check spelling or folder location.`, 'error');
-                
-                // Fallback Box only for player
-                if(isPlayer) {
-                    const boxGeo = new THREE.BoxGeometry(1, 2, 1);
-                    const boxMat = new THREE.MeshBasicMaterial({color: 'red', wireframe: true});
-                    playerMesh = new THREE.Mesh(boxGeo, boxMat);
-                    scene.add(playerMesh);
-                }
-            });
+        function checkLoad() {
+            assetsLoaded++;
+            if(assetsLoaded === 2) {
+                document.getElementById('loader').style.display = 'none';
+                log("GAME STARTED!");
+                animate();
+            }
         }
 
-        // Start Loading
-        loadModel("Map (City)", FILES.city, false);
-        loadModel("Player", FILES.player, true);
+        // 1. LOAD CITY (With Force Scale)
+        loader.load(CONFIG.cityFile, (gltf) => {
+            city = gltf.scene;
+            
+            // --- CITY FIX MAGIC ---
+            city.scale.set(CONFIG.cityScale, CONFIG.cityScale, CONFIG.cityScale);
+            city.position.set(0, -2, 0); // Thoda neeche kiya taaki player hawa mein na ho
+            
+            city.traverse(child => {
+                if (child.isMesh) {
+                    child.receiveShadow = true;
+                    child.material.side = THREE.DoubleSide; // Dono taraf se dikhe
+                }
+            });
+            
+            scene.add(city);
+            log(`City Loaded (Scale: ${CONFIG.cityScale}x)`);
+            checkLoad();
+        }, undefined, (err) => { log("ERROR: City load failed!"); console.error(err); });
 
-        // --- 5. CONTROLS ---
-        let joystickData = { angle: 0, force: 0 };
-        let camRot = { x: -0.5, y: 0 };
-        const camDist = 5;
+        // 2. LOAD PLAYER (With Animation)
+        loader.load(CONFIG.playerFile, (gltf) => {
+            player = gltf.scene;
+            player.scale.set(CONFIG.playerScale, CONFIG.playerScale, CONFIG.playerScale);
+            player.traverse(c => { if(c.isMesh) c.castShadow = true; });
 
-        // Joystick
+            // --- ANIMATION SETUP ---
+            mixer = new THREE.AnimationMixer(player);
+            const anims = gltf.animations;
+            
+            if (anims.length > 0) {
+                log(`Found ${anims.length} animations!`);
+                
+                // Sab animations ko load karo
+                anims.forEach((clip) => {
+                    actions.push(mixer.clipAction(clip));
+                });
+
+                // Default: Play first animation (Idle)
+                activeAction = actions[0];
+                activeAction.play();
+            } else {
+                log("⚠️ No animations found in model.");
+            }
+
+            scene.add(player);
+            checkLoad();
+        }, undefined, (err) => { log("ERROR: Player load failed!"); });
+
+
+        // --- CONTROLS ---
         const joystick = nipplejs.create({
             zone: document.getElementById('joystick-zone'),
             mode: 'static',
             position: { left: '50%', top: '50%' },
-            color: 'cyan'
+            color: 'white'
         });
+
         joystick.on('move', (evt, data) => {
             joystickData.angle = data.angle.radian;
             joystickData.force = Math.min(data.force, 1);
@@ -168,46 +163,65 @@
         // Touch Look
         const lookZone = document.getElementById('look-zone');
         let prevTouch = { x: 0, y: 0 };
-        lookZone.addEventListener('touchstart', e => {
-            prevTouch.x = e.touches[0].clientX;
-            prevTouch.y = e.touches[0].clientY;
-        });
+        lookZone.addEventListener('touchstart', e => { prevTouch.x = e.touches[0].clientX; prevTouch.y = e.touches[0].clientY; });
         lookZone.addEventListener('touchmove', e => {
             const x = e.touches[0].clientX;
             const y = e.touches[0].clientY;
             camRot.y -= (x - prevTouch.x) * 0.005;
             camRot.x -= (y - prevTouch.y) * 0.005;
+            camRot.x = Math.max(-1, Math.min(0.5, camRot.x));
             prevTouch = {x, y};
         });
 
-        // Loop
-        const clock = new THREE.Clock();
+        // --- ANIMATION SWITCHER ---
+        function fadeToAction(index, duration) {
+            if (!actions[index] || activeAction === actions[index]) return;
+            
+            lastAction = activeAction;
+            activeAction = actions[index];
+            
+            lastAction.fadeOut(duration);
+            activeAction.reset().fadeIn(duration).play();
+        }
+
+        // --- GAME LOOP ---
         function animate() {
             requestAnimationFrame(animate);
             const delta = clock.getDelta();
 
-            if (playerMesh) {
+            if (player) {
+                // Movement
                 if (joystickData.force > 0) {
                     const moveAngle = joystickData.angle + camRot.y + Math.PI/2;
-                    const speed = 5 * delta;
-                    playerMesh.position.x -= Math.cos(moveAngle) * speed;
-                    playerMesh.position.z -= Math.sin(moveAngle) * speed;
-                    playerMesh.rotation.y = moveAngle + Math.PI;
+                    const speed = 8 * delta; // Walk speed
+                    
+                    player.position.x -= Math.cos(moveAngle) * speed;
+                    player.position.z -= Math.sin(moveAngle) * speed;
+                    player.rotation.y = moveAngle + Math.PI;
+
+                    // Agar animations hain, aur player chal raha hai
+                    // To koshish karo 2nd animation (Walk) chalane ki
+                    if (actions.length > 1) {
+                        fadeToAction(1, 0.2); // Play Walk (Index 1)
+                    }
+                } else {
+                    // Agar ruk gaya
+                    if (actions.length > 0) {
+                        fadeToAction(0, 0.2); // Play Idle (Index 0)
+                    }
                 }
-                
-                // Camera Follow
-                const cx = playerMesh.position.x + camDist * Math.sin(camRot.y);
-                const cz = playerMesh.position.z + camDist * Math.cos(camRot.y);
-                camera.position.set(cx, playerMesh.position.y + 3, cz);
-                camera.lookAt(playerMesh.position);
+
+                // Camera
+                const camX = player.position.x + camDist * Math.sin(camRot.y);
+                const camZ = player.position.z + camDist * Math.cos(camRot.y);
+                camera.position.lerp(new THREE.Vector3(camX, player.position.y + 3 + (camRot.x*2), camZ), 0.1);
+                camera.lookAt(player.position.x, player.position.y + 1.5, player.position.z);
             }
-            
-            if(mixer) mixer.update(delta);
+
+            if (mixer) mixer.update(delta);
             renderer.render(scene, camera);
         }
-        animate();
 
-        // Resize
         window.addEventListener('resize', () => {
             camera.aspect = window.innerWidth / window.innerHeight;
             camera.updateProjectionMatrix();
