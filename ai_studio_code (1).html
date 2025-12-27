@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>City Explorer - BGMI Style</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; touch-action: none; font-family: Arial, sans-serif; }
+        
+        /* Loading Screen */
+        #loader {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: #1a1a1a; color: white; display: flex;
+            justify-content: center; align-items: center; z-index: 999;
+        }
+
+        /* Controls UI */
+        #ui-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+        
+        /* Left Joystick Zone */
+        #zone_joystick {
+            position: absolute; bottom: 20px; left: 20px; width: 150px; height: 150px;
+            pointer-events: auto; /* Allow touch */
+        }
+
+        /* Right Touch Zone (For Aiming/Looking) */
+        #zone_look {
+            position: absolute; top: 0; right: 0; width: 50%; height: 100%;
+            pointer-events: auto; /* Allow touch */
+        }
+        
+        /* Landscape Warning */
+        @media screen and (orientation: portrait) {
+            #loader::after { content: " \A Please Rotate Device to Landscape!"; white-space: pre; color: yellow; }
+        }
+    </style>
+    
+    <!-- Three.js Libraries via CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/nipplejs/0.9.0/nipplejs.min.js"></script>
+</head>
+<body>
+
+    <div id="loader"><h1>Loading World...</h1></div>
+
+    <!-- UI Controls -->
+    <div id="ui-layer">
+        <div id="zone_joystick"></div>
+        <div id="zone_look"></div>
+    </div>
+
+    <script>
+        // --- 1. BASIC SETUP ---
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x87CEEB); // Sky Blue (Din ka mausam)
+        scene.fog = new THREE.Fog(0x87CEEB, 10, 100); // Thoda dhundhla effect
+
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        document.body.appendChild(renderer.domElement);
+
+        // Lights
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambientLight);
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1);
+        dirLight.position.set(10, 20, 10);
+        dirLight.castShadow = true;
+        scene.add(dirLight);
+
+        // Variables
+        let player, mixer, city;
+        const clock = new THREE.Clock();
+        
+        // Movement Variables
+        let moveForward = false;
+        let moveBackward = false;
+        let moveLeft = false;
+        let moveRight = false;
+        let joystickData = { angle: 0, force: 0 };
+        
+        // Camera Variables
+        let cameraRotation = { x: 0, y: Math.PI }; // Initial rotation
+        let cameraDistance = 3; // Distance behind player
+        let cameraHeight = 1.5;
+
+        // --- 2. LOADING MODELS ---
+        const loader = new THREE.GLTFLoader();
+        const loadingScreen = document.getElementById('loader');
+
+        // Load City
+        loader.load('futuristic_city.glb', (gltf) => {
+            city = gltf.scene;
+            city.traverse(c => { if(c.isMesh) c.receiveShadow = true; });
+            scene.add(city);
+        }, undefined, (error) => console.error(error));
+
+        // Load Player (Character)
+        loader.load('player.glb', (gltf) => {
+            player = gltf.scene;
+            player.traverse(c => { if(c.isMesh) c.castShadow = true; });
+            
+            // Player initial position (Change if stuck in wall)
+            player.position.set(0, 0.5, 0); 
+            player.scale.set(0.5, 0.5, 0.5); // Adjust size if too big/small
+
+            // Animation Mixer (Agar player mein animation hai to)
+            mixer = new THREE.AnimationMixer(player);
+            if (gltf.animations.length > 0) {
+                const action = mixer.clipAction(gltf.animations[0]); // Play first animation
+                action.play();
+            }
+
+            scene.add(player);
+            loadingScreen.style.display = 'none'; // Hide loader
+            animate();
+        }, undefined, (error) => {
+            console.log('Player model not found, using placeholder');
+            // Fallback if player.glb missing: Red Box
+            const geometry = new THREE.BoxGeometry(0.5, 1.5, 0.5);
+            const material = new THREE.MeshStandardMaterial({ color: 0xff0000 });
+            player = new THREE.Mesh(geometry, material);
+            player.position.set(0, 1, 0);
+            scene.add(player);
+            loadingScreen.style.display = 'none';
+            animate();
+        });
+
+        // --- 3. CONTROLS (BGMI STYLE) ---
+        
+        // Left Joystick (Movement)
+        const joystickManager = nipplejs.create({
+            zone: document.getElementById('zone_joystick'),
+            mode: 'static',
+            position: { left: '50%', top: '50%' },
+            color: 'white'
+        });
+
+        joystickManager.on('move', (evt, data) => {
+            joystickData.angle = data.angle.radian;
+            joystickData.force = Math.min(data.force, 1); // Cap speed
+        });
+
+        joystickManager.on('end', () => {
+            joystickData.force = 0;
+        });
+
+        // Right Screen Touch (Camera Look)
+        const lookZone = document.getElementById('zone_look');
+        let previousTouchX = 0;
+        let previousTouchY = 0;
+
+        lookZone.addEventListener('touchstart', (e) => {
+            previousTouchX = e.touches[0].clientX;
+            previousTouchY = e.touches[0].clientY;
+        });
+
+        lookZone.addEventListener('touchmove', (e) => {
+            const touchX = e.touches[0].clientX;
+            const touchY = e.touches[0].clientY;
+            
+            const sensitivity = 0.005;
+            cameraRotation.y -= (touchX - previousTouchX) * sensitivity;
+            cameraRotation.x -= (touchY - previousTouchY) * sensitivity;
+
+            // Clamp vertical look (taaki gardan na toote)
+            cameraRotation.x = Math.max(-0.5, Math.min(0.5, cameraRotation.x));
+
+            previousTouchX = touchX;
+            previousTouchY = touchY;
+        });
+
+        // --- 4. GAME LOOP ---
+        function animate() {
+            requestAnimationFrame(animate);
+            const delta = clock.getDelta();
+
+            if (player) {
+                // 1. Update Player Rotation based on Camera Look + Joystick
+                // BGMI logic: Player faces direction of movement relative to camera
+                
+                if (joystickData.force > 0) {
+                    // Calculate movement direction relative to camera
+                    const moveAngle = joystickData.angle; // Joystick angle
+                    
+                    // Basic Movement Logic
+                    const speed = 5 * delta; // Walk Speed
+                    
+                    // Math to convert joystick angle to 3D world movement
+                    // Note: NippleJS 0 radians is Right. ThreeJS Z is Forward.
+                    
+                    const angleOffset = Math.PI / 2; // Adjust for NippleJS orientation
+                    const targetRotation = joystickData.angle + cameraRotation.y + angleOffset; // Relative to camera
+
+                    player.position.x -= Math.cos(targetRotation) * speed * joystickData.force;
+                    player.position.z -= Math.sin(targetRotation) * speed * joystickData.force;
+
+                    // Smoothly rotate player to face moving direction
+                    player.rotation.y = targetRotation + Math.PI; 
+                }
+
+                // Update Animation
+                if (mixer) mixer.update(delta);
+
+                // 2. Camera Follow Logic (Third Person)
+                // Calculate camera position based on rotation angles around player
+                const offsetX = cameraDistance * Math.sin(cameraRotation.y);
+                const offsetZ = cameraDistance * Math.cos(cameraRotation.y);
+                
+                camera.position.x = player.position.x + offsetX;
+                camera.position.z = player.position.z + offsetZ;
+                camera.position.y = player.position.y + cameraHeight + (cameraRotation.x * 2);
+
+                camera.lookAt(player.position.x, player.position.y + 1, player.position.z);
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        // Handle Window Resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+    </script>
+</body>
+</html>
