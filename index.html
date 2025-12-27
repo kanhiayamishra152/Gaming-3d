@@ -3,286 +3,216 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>City & Soldier Explorer</title>
+    <title>3D Model Debugger</title>
     <style>
-        body { margin: 0; overflow: hidden; background: #87CEEB; touch-action: none; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        body { margin: 0; overflow: hidden; background: #333; font-family: monospace; }
         
-        /* Loading Screen UI */
-        #loader {
-            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-            background: linear-gradient(45deg, #1a1a1a, #2c3e50);
-            color: white; display: flex; flex-direction: column;
-            justify-content: center; align-items: center; z-index: 999;
-            transition: opacity 1s ease-out;
+        /* Message Box for Status */
+        #status-box {
+            position: absolute; top: 10px; left: 10px; width: 90%;
+            background: rgba(0, 0, 0, 0.8); color: lime;
+            padding: 10px; border-radius: 8px; pointer-events: none;
+            white-space: pre-wrap; font-size: 14px; z-index: 100;
         }
-        .status-text { margin-top: 10px; font-size: 14px; color: #aaa; }
+        .error { color: #ff5555; font-weight: bold; }
+        .success { color: #55ff55; }
+        .info { color: #aaaaff; }
 
         /* Controls */
-        #ui-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
-        
-        /* Joystick (Left) */
-        #zone_joystick {
-            position: absolute; bottom: 40px; left: 40px; width: 140px; height: 140px;
-            pointer-events: auto; background: rgba(255, 255, 255, 0.05); border-radius: 50%;
-            border: 2px solid rgba(255,255,255,0.1);
-        }
-
-        /* Look Zone (Right) */
-        #zone_look {
-            position: absolute; top: 0; right: 0; width: 50%; height: 100%;
-            pointer-events: auto;
-        }
-
-        /* Debug Info */
-        #debug {
-            position: absolute; top: 10px; left: 10px; color: yellow; 
-            background: rgba(0,0,0,0.6); padding: 5px 10px; border-radius: 5px;
-            font-size: 12px; pointer-events: none;
-        }
+        #joystick-zone { position: absolute; bottom: 30px; left: 30px; width: 120px; height: 120px; z-index: 50; }
+        #look-zone { position: absolute; top: 0; right: 0; width: 50%; height: 100%; z-index: 50; }
     </style>
-    
-    <!-- Three.js Libraries -->
+
+    <!-- Libraries -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/nipplejs/0.9.0/nipplejs.min.js"></script>
 </head>
 <body>
 
-    <div id="loader">
-        <h2>Initializing Game World...</h2>
-        <div id="status-city" class="status-text">Waiting for City Map...</div>
-        <div id="status-player" class="status-text">Waiting for Soldier...</div>
-    </div>
-    
-    <div id="debug">System: Starting...</div>
-
-    <div id="ui-layer">
-        <div id="zone_joystick"></div>
-        <div id="zone_look"></div>
-    </div>
+    <div id="status-box">Initializing System...</div>
+    <div id="joystick-zone"></div>
+    <div id="look-zone"></div>
 
     <script>
-        // --- CONFIGURATION ---
-        const CONFIG = {
-            cityFile: 'futuristic_city.glb',
-            playerFile: 'soldier_human.glb', // GitHub filename
-            cityScale: 5,   // Agar city choti dikhe to isse badhayen (e.g., 10)
-            playerScale: 1, // Agar soldier chota dikhe to isse badhayen
-            walkSpeed: 6
+        // --- 1. CONFIGURATION (NAAM YAHAN CHECK KAREIN) ---
+        const FILES = {
+            city: 'futuristic_city.glb',    // File name check karein (case sensitive!)
+            player: 'soldier_human.glb'     // File name check karein
         };
 
-        const debugEl = document.getElementById('debug');
-        function log(msg) { console.log(msg); debugEl.innerHTML = msg; }
-        
-        // --- 1. SCENE SETUP ---
-        const scene = new THREE.Scene();
-        scene.background = new THREE.Color(0x87CEEB); 
-        scene.fog = new THREE.Fog(0x87CEEB, 20, 100); // Door ki cheezein dhundhli hongi
-
-        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-        const renderer = new THREE.WebGLRenderer({ antialias: true });
-        renderer.setSize(window.innerWidth, window.innerHeight);
-        renderer.shadowMap.enabled = true;
-        renderer.outputEncoding = THREE.sRGBEncoding; // Better colors
-        document.body.appendChild(renderer.domElement);
-
-        // --- 2. LIGHTING (Very Important) ---
-        const ambientLight = new THREE.AmbientLight(0xffffff, 0.7); // Base light
-        scene.add(ambientLight);
-
-        const sunLight = new THREE.DirectionalLight(0xffffff, 1.5); // Sun
-        sunLight.position.set(50, 100, 50);
-        sunLight.castShadow = true;
-        sunLight.shadow.mapSize.width = 2048; 
-        sunLight.shadow.mapSize.height = 2048;
-        scene.add(sunLight);
-
-        // Fallback Grid (Zameen agar city na load ho)
-        const gridHelper = new THREE.GridHelper(100, 100, 0x000000, 0x555555);
-        gridHelper.position.y = -0.1; 
-        scene.add(gridHelper);
-
-        // --- 3. VARIABLES ---
-        let player, mixer;
-        let city;
-        const clock = new THREE.Clock();
-        
-        let joystickData = { angle: 0, force: 0 };
-        let camRot = { x: -0.3, y: Math.PI }; // Camera angles
-        let camDist = 5; 
-
-        // --- 4. ASSET LOADING ---
-        const loader = new THREE.GLTFLoader();
-        let loadedCount = 0;
-
-        function checkLoadComplete() {
-            loadedCount++;
-            if(loadedCount >= 2) {
-                const loaderScreen = document.getElementById('loader');
-                loaderScreen.style.opacity = '0';
-                setTimeout(() => loaderScreen.style.display = 'none', 1000);
-                log("All Assets Loaded. Ready!");
-                animate();
-            }
+        // --- 2. LOGGING SYSTEM ---
+        const statusBox = document.getElementById('status-box');
+        function log(msg, type = 'info') {
+            console.log(msg);
+            const line = document.createElement('div');
+            line.textContent = `> ${msg}`;
+            line.className = type;
+            statusBox.appendChild(line);
         }
 
-        // A. LOAD CITY MAP
-        loader.load(CONFIG.cityFile, (gltf) => {
-            city = gltf.scene;
-            city.scale.set(CONFIG.cityScale, CONFIG.cityScale, CONFIG.cityScale);
-            city.position.set(0, 0, 0);
+        // --- 3. BASIC SCENE ---
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x808080); // Grey background taaki model dikhe
+
+        // Helpers (Grid aur Axis taaki pata chale zameen kahan hai)
+        const grid = new THREE.GridHelper(100, 100);
+        scene.add(grid);
+        const axes = new THREE.AxesHelper(5); // Red=X, Green=Y, Blue=Z
+        scene.add(axes);
+
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 10000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        // Lighting (Boht tez light taaki sab dikhe)
+        const ambLight = new THREE.AmbientLight(0xffffff, 1);
+        scene.add(ambLight);
+        const dirLight = new THREE.DirectionalLight(0xffffff, 2);
+        dirLight.position.set(10, 20, 10);
+        scene.add(dirLight);
+
+        // --- 4. ASSET LOADER WITH AUTO-SCALE ---
+        const loader = new THREE.GLTFLoader();
+        let playerMesh = null;
+        let mixer = null;
+        
+        // Function: Load and Auto-Fix Model
+        function loadModel(name, url, isPlayer) {
+            log(`Starting download: ${url}...`, 'info');
             
-            // Shadows enable karna
-            city.traverse((node) => {
-                if (node.isMesh) {
-                    node.receiveShadow = true;
-                    // Kabhi kabhi city model transparency ki wajah se gayab ho jata hai, use fix karein:
-                    node.material.side = THREE.DoubleSide; 
+            loader.load(url, (gltf) => {
+                const model = gltf.scene;
+                
+                // --- AUTO SCALING MAGIC ---
+                // Model ka asli size nikalna
+                const box = new THREE.Box3().setFromObject(model);
+                const size = new THREE.Vector3();
+                box.getSize(size);
+                
+                log(`✅ ${name} Loaded! Original Size: ${size.x.toFixed(2)}, ${size.y.toFixed(2)}`, 'success');
+
+                if (size.length() === 0) {
+                    log(`⚠️ Warning: ${name} is empty (0 size)!`, 'error');
+                    return;
+                }
+
+                // Model ko Center karna
+                const center = new THREE.Vector3();
+                box.getCenter(center);
+                model.position.sub(center); // Center to (0,0,0)
+
+                // Scale Logic (Agar model bohot bada ya chota hai to fix karo)
+                const targetSize = isPlayer ? 2 : 50; // Player 2m uncha, City 50m
+                const maxDim = Math.max(size.x, size.y, size.z);
+                const scaleFactor = targetSize / maxDim;
+                
+                model.scale.setScalar(scaleFactor);
+                
+                // Position fix
+                if(isPlayer) {
+                    model.position.y = 0; // Zameen par
+                    playerMesh = model;
+                    
+                    // Add simple animation if available
+                    if(gltf.animations.length > 0) {
+                        mixer = new THREE.AnimationMixer(playerMesh);
+                        mixer.clipAction(gltf.animations[0]).play();
+                    }
+                } else {
+                    model.position.y = -1; // City thoda neeche
+                }
+
+                scene.add(model);
+                log(`${name} Rescaled & Added to Scene.`, 'success');
+
+            }, 
+            undefined, // Progress
+            (error) => {
+                log(`❌ ERROR: Could not load ${name} (${url})`, 'error');
+                log(`Tip: Check spelling or folder location.`, 'error');
+                
+                // Fallback Box only for player
+                if(isPlayer) {
+                    const boxGeo = new THREE.BoxGeometry(1, 2, 1);
+                    const boxMat = new THREE.MeshBasicMaterial({color: 'red', wireframe: true});
+                    playerMesh = new THREE.Mesh(boxGeo, boxMat);
+                    scene.add(playerMesh);
                 }
             });
-            
-            scene.add(city);
-            document.getElementById('status-city').innerText = "✅ City Map Loaded";
-            document.getElementById('status-city').style.color = "#0f0";
-            checkLoadComplete();
-        }, 
-        (xhr) => { log(`Loading City: ${Math.round(xhr.loaded/xhr.total*100)}%`); },
-        (err) => { 
-            console.error(err); 
-            document.getElementById('status-city').innerText = "❌ City Load Failed (Check Filename)";
-            document.getElementById('status-city').style.color = "red";
-            // Agar fail hua, tab bhi game start karein taaki soldier dikhe
-            checkLoadComplete(); 
-        });
+        }
 
-        // B. LOAD SOLDIER
-        loader.load(CONFIG.playerFile, (gltf) => {
-            player = gltf.scene;
-            player.scale.set(CONFIG.playerScale, CONFIG.playerScale, CONFIG.playerScale);
-            player.position.set(0, 0, 0); // Start position
+        // Start Loading
+        loadModel("Map (City)", FILES.city, false);
+        loadModel("Player", FILES.player, true);
 
-            player.traverse((node) => {
-                if (node.isMesh) node.castShadow = true;
-            });
+        // --- 5. CONTROLS ---
+        let joystickData = { angle: 0, force: 0 };
+        let camRot = { x: -0.5, y: 0 };
+        const camDist = 5;
 
-            // Animations setup
-            mixer = new THREE.AnimationMixer(player);
-            if(gltf.animations.length > 0) {
-                // Pehli animation (usually Idle ya Walk hoti hai) play karein
-                mixer.clipAction(gltf.animations[0]).play();
-            }
-
-            scene.add(player);
-            document.getElementById('status-player').innerText = "✅ Soldier Loaded";
-            document.getElementById('status-player').style.color = "#0f0";
-            checkLoadComplete();
-        }, 
-        (xhr) => { log(`Loading Soldier: ${Math.round(xhr.loaded/xhr.total*100)}%`); },
-        (err) => { 
-            console.error(err);
-            document.getElementById('status-player').innerText = "❌ Soldier Load Failed";
-            // Fallback Box banayein agar soldier fail ho jaye
-            const geo = new THREE.BoxGeometry(1, 2, 1);
-            const mat = new THREE.MeshStandardMaterial({color: 'red'});
-            player = new THREE.Mesh(geo, mat);
-            scene.add(player);
-            checkLoadComplete();
-        });
-
-        // --- 5. CONTROLS SETUP ---
-        
         // Joystick
         const joystick = nipplejs.create({
-            zone: document.getElementById('zone_joystick'),
+            zone: document.getElementById('joystick-zone'),
             mode: 'static',
             position: { left: '50%', top: '50%' },
-            color: 'white'
+            color: 'cyan'
         });
-
         joystick.on('move', (evt, data) => {
             joystickData.angle = data.angle.radian;
-            joystickData.force = Math.min(data.force, 1.5);
+            joystickData.force = Math.min(data.force, 1);
         });
         joystick.on('end', () => { joystickData.force = 0; });
 
-        // Touch Camera Look
-        const lookZone = document.getElementById('zone_look');
+        // Touch Look
+        const lookZone = document.getElementById('look-zone');
         let prevTouch = { x: 0, y: 0 };
-        
-        lookZone.addEventListener('touchstart', (e) => {
+        lookZone.addEventListener('touchstart', e => {
             prevTouch.x = e.touches[0].clientX;
             prevTouch.y = e.touches[0].clientY;
         });
-
-        lookZone.addEventListener('touchmove', (e) => {
+        lookZone.addEventListener('touchmove', e => {
             const x = e.touches[0].clientX;
             const y = e.touches[0].clientY;
-            
-            // Sensitivity
-            const sensitivity = 0.004;
-            camRot.y -= (x - prevTouch.x) * sensitivity;
-            camRot.x -= (y - prevTouch.y) * sensitivity;
-            
-            // Limit Vertical Look (Gardan tootne se bachayein)
-            camRot.x = Math.max(-0.8, Math.min(0.5, camRot.x));
-
-            prevTouch.x = x;
-            prevTouch.y = y;
+            camRot.y -= (x - prevTouch.x) * 0.005;
+            camRot.x -= (y - prevTouch.y) * 0.005;
+            prevTouch = {x, y};
         });
 
-        // --- 6. GAME LOOP ---
+        // Loop
+        const clock = new THREE.Clock();
         function animate() {
             requestAnimationFrame(animate);
             const delta = clock.getDelta();
 
-            if(player) {
-                // Movement Logic
-                if(joystickData.force > 0) {
-                    // Joystick angle nipplejs mein math ke hisaab se hota hai, 
-                    // humein ise camera ke hisaab se adjust karna padega
-                    
-                    // NippleJS 0 radians = Right. ThreeJS Forward = Z.
-                    // Isliye +90 degree (PI/2) add karte hain + Camera Rotation
-                    const moveAngle = joystickData.angle + camRot.y + (Math.PI / 2);
-
-                    const speed = CONFIG.walkSpeed * delta * joystickData.force;
-
-                    player.position.x -= Math.cos(moveAngle) * speed;
-                    player.position.z -= Math.sin(moveAngle) * speed;
-
-                    // Player ko chalne ki disha mein ghumayein
-                    player.rotation.y = moveAngle + Math.PI; 
+            if (playerMesh) {
+                if (joystickData.force > 0) {
+                    const moveAngle = joystickData.angle + camRot.y + Math.PI/2;
+                    const speed = 5 * delta;
+                    playerMesh.position.x -= Math.cos(moveAngle) * speed;
+                    playerMesh.position.z -= Math.sin(moveAngle) * speed;
+                    playerMesh.rotation.y = moveAngle + Math.PI;
                 }
-
-                if(mixer) mixer.update(delta);
-
-                // Update Camera Position (Third Person)
-                // Camera player ke peeche (offset) set karein
-                const hDist = camDist * Math.cos(camRot.x); // Horizontal distance
-                const vDist = camDist * Math.sin(camRot.x); // Vertical height
-
-                const camX = player.position.x + (hDist * Math.sin(camRot.y));
-                const camZ = player.position.z + (hDist * Math.cos(camRot.y));
-                const camY = player.position.y + 2 + (vDist * -1); // +2 player ki height ke liye
-
-                // Smooth Camera (Lerp)
-                camera.position.x += (camX - camera.position.x) * 0.1;
-                camera.position.z += (camZ - camera.position.z) * 0.1;
-                camera.position.y += (camY - camera.position.y) * 0.1;
-
-                camera.lookAt(player.position.x, player.position.y + 1.5, player.position.z);
+                
+                // Camera Follow
+                const cx = playerMesh.position.x + camDist * Math.sin(camRot.y);
+                const cz = playerMesh.position.z + camDist * Math.cos(camRot.y);
+                camera.position.set(cx, playerMesh.position.y + 3, cz);
+                camera.lookAt(playerMesh.position);
             }
-
+            
+            if(mixer) mixer.update(delta);
             renderer.render(scene, camera);
         }
+        animate();
 
-        // Resize Handle
+        // Resize
         window.addEventListener('resize', () => {
             camera.aspect = window.innerWidth / window.innerHeight;
             camera.updateProjectionMatrix();
             renderer.setSize(window.innerWidth, window.innerHeight);
         });
-
     </script>
 </body>
 </html>
